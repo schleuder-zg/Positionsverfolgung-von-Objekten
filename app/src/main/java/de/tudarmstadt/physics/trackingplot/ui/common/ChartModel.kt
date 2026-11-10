@@ -13,23 +13,25 @@ import com.github.mikephil.charting.data.LineDataSet
 import de.tudarmstadt.physics.trackingplot.geometry.RulerScale
 import kotlin.math.max
 
+/** One measured position in the XY trajectory. */
+data class TrajectoryPoint(val x: Float, val y: Float)
+
 /**
- * Chart data of one experiment: for every tracker an "x" and a "y" series over time.
+ * Chart data of one experiment: for every tracker an "x" and a "y" series over time,
+ * plus the measured positions used by the XY trajectory view.
  *
- * MPAndroidChart is not thread-safe, so every method must be called on the main thread. Values are
- * stored in real-world units when a [RulerScale] is available, otherwise as normalised frame
- * coordinates. Changes are published to the UI through [version]; call [commit] (or
- * [commitIfDirty]) after adding samples.
+ * MPAndroidChart is used only for the time plots. XY positions are kept in insertion order
+ * and rendered by Compose, because a trajectory's x values are not necessarily sorted.
+ * Values are stored in real-world units when a [RulerScale] is available, otherwise as
+ * normalised frame coordinates. Changes are published through [version].
  */
 class ChartModel(private val rulerScale: RulerScale?) {
 
     /** Unit of the plotted values, or null for normalised coordinates. */
     val unitLabel: String? = rulerScale?.unit?.symbol
 
+    /** Time-series data displayed by MPAndroidChart. */
     val data = LineData()
-
-    /** Separate x/y trajectory datasets; entries use position on both axes. */
-    val xyData = LineData()
 
     /** Incremented on every committed change; the chart view re-reads the data when it changes. */
     var version by mutableIntStateOf(0)
@@ -43,12 +45,16 @@ class ChartModel(private val rulerScale: RulerScale?) {
     val hiddenSeries: Set<String> get() = _hiddenSeries
 
     private val seriesByTracker = HashMap<Int, Pair<LineDataSet, LineDataSet>>()
-    private val xySeriesByTracker = HashMap<Int, LineDataSet>()
+    private val trajectoryByTracker = LinkedHashMap<Int, MutableList<TrajectoryPoint>>()
     private var dirty = false
     private var pendingLatestTimeMs = 0f
 
     /** Tracker ids that have at least one sample, in ascending order. */
     val trackerIds: List<Int> get() = seriesByTracker.keys.sorted()
+
+    /** Returns trajectory points in measurement order (not sorted by x). */
+    fun trajectoryPoints(trackerId: Int): List<TrajectoryPoint> =
+        trajectoryByTracker[trackerId].orEmpty()
 
     /** Adds a sample; it becomes visible (and [latestTimeMs] updates) on the next [commit]. */
     fun addSample(trackerId: Int, timeMs: Long, normalizedX: Double, normalizedY: Double) {
@@ -56,9 +62,12 @@ class ChartModel(private val rulerScale: RulerScale?) {
         val x = rulerScale?.x(normalizedX) ?: normalizedX
         val y = rulerScale?.y(normalizedY) ?: normalizedY
         val time = timeMs.toFloat()
-        seriesX.addEntry(Entry(time, x.toFloat()))
-        seriesY.addEntry(Entry(time, y.toFloat()))
-        xySeries(trackerId).addEntry(Entry(x.toFloat(), y.toFloat()))
+        val positionX = x.toFloat()
+        val positionY = y.toFloat()
+        seriesX.addEntry(Entry(time, positionX))
+        seriesY.addEntry(Entry(time, positionY))
+        trajectoryByTracker.getOrPut(trackerId) { ArrayList() }
+            .add(TrajectoryPoint(positionX, positionY))
         pendingLatestTimeMs = max(pendingLatestTimeMs, time)
         dirty = true
     }
@@ -73,24 +82,20 @@ class ChartModel(private val rulerScale: RulerScale?) {
     fun commit() {
         dirty = false
         data.notifyDataChanged()
-        xyData.notifyDataChanged()
         latestTimeMs = pendingLatestTimeMs
         version++
     }
 
     fun isSeriesVisible(label: String): Boolean = label !in _hiddenSeries
 
+    /** A trajectory remains visible while at least one of its x/y series is enabled. */
+    fun isTrajectoryVisible(trackerId: Int): Boolean =
+        xLabel(trackerId) !in _hiddenSeries || yLabel(trackerId) !in _hiddenSeries
+
     fun toggleSeries(label: String) {
         val visible = label in _hiddenSeries
         if (visible) _hiddenSeries.remove(label) else _hiddenSeries.add(label)
-        val trackerId = seriesByTracker.keys.firstOrNull {
-            label == xLabel(it) || label == yLabel(it)
-        }
         (data.getDataSetByLabel(label, false) as? LineDataSet)?.isVisible = visible
-        if (trackerId != null) {
-            val showTrajectory = xLabel(trackerId) !in _hiddenSeries || yLabel(trackerId) !in _hiddenSeries
-            xySeriesByTracker[trackerId]?.isVisible = showTrajectory
-        }
         commit()
     }
 
@@ -103,22 +108,6 @@ class ChartModel(private val rulerScale: RulerScale?) {
             data.addDataSet(seriesY)
             seriesX to seriesY
         }
-
-    private fun xySeries(trackerId: Int): LineDataSet = xySeriesByTracker.getOrPut(trackerId) {
-        val label = trackerLabel(trackerId)
-        LineDataSet(ArrayList(), label).apply {
-            color = TrackerColors.color(trackerId).toArgb()
-            lineWidth = 2f
-            setDrawCircles(true)
-            circleRadius = 3f
-            setDrawCircleHole(false)
-            setDrawValues(false)
-            mode = LineDataSet.Mode.LINEAR
-            form = Legend.LegendForm.LINE
-            isVisible = true
-            xyData.addDataSet(this)
-        }
-    }
 
     private fun newSeries(label: String, color: Int, dashed: Boolean): LineDataSet =
         LineDataSet(ArrayList(), label).apply {
@@ -138,6 +127,5 @@ class ChartModel(private val rulerScale: RulerScale?) {
     companion object {
         fun xLabel(trackerId: Int): String = "${TrackerColors.name(trackerId)} x"
         fun yLabel(trackerId: Int): String = "${TrackerColors.name(trackerId)} y"
-        fun trackerLabel(trackerId: Int): String = TrackerColors.name(trackerId)
     }
 }
