@@ -1,5 +1,7 @@
 package de.tudarmstadt.physics.trackingplot.ui.common
 
+import android.graphics.Paint
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -18,6 +20,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -26,6 +31,7 @@ import com.github.mikephil.charting.components.AxisBase
 import com.github.mikephil.charting.components.XAxis
 import com.github.mikephil.charting.formatter.ValueFormatter
 import java.util.Locale
+import kotlin.math.max
 
 /**
  * Line chart of a [ChartModel] with a row of chips to show/hide individual series.
@@ -69,62 +75,103 @@ fun TrackingChart(
     }
 }
 
+/**
+ * XY plot rendered directly on a Compose Canvas. This deliberately draws individual samples
+ * only: it does not sort x coordinates and does not use MPAndroidChart's LineChartRenderer.
+ */
 @Composable
 private fun TrajectoryChartView(
     model: ChartModel,
     invertY: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val colorScheme = MaterialTheme.colorScheme
-    val textColor = colorScheme.onSurface.toArgb()
-    val gridColor = colorScheme.outlineVariant.toArgb()
+    val textColor = MaterialTheme.colorScheme.onSurface
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val backgroundColor = MaterialTheme.colorScheme.surface
     val unitLabel = model.unitLabel
+    val version = model.version
 
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            LineChart(context).apply {
-                description.isEnabled = false
-                axisRight.isEnabled = false
-                setNoDataText("")
-                setTouchEnabled(true)
-                isDragEnabled = true
-                setScaleEnabled(true)
-                setPinchZoom(false)
-                xAxis.position = XAxis.XAxisPosition.BOTTOM
-                xAxis.valueFormatter = ValueAxisFormatter(unitLabel)
-                axisLeft.valueFormatter = ValueAxisFormatter(unitLabel)
-                legend.isWordWrapEnabled = true
-            }
-        },
-        update = { chart ->
-            val version = model.version
-            if (chart.data !== model.xyData) chart.data = model.xyData
-            chart.xAxis.textColor = textColor
-            chart.xAxis.gridColor = gridColor
-            chart.xAxis.axisLineColor = gridColor
-            chart.axisLeft.textColor = textColor
-            chart.axisLeft.gridColor = gridColor
-            chart.axisLeft.axisLineColor = gridColor
-            chart.legend.textColor = textColor
-            chart.axisLeft.isInverted = invertY
+    Canvas(modifier = modifier) {
+        val left = 64f
+        val right = size.width - 16f
+        val top = 16f
+        val bottom = size.height - 52f
+        val plotWidth = (right - left).coerceAtLeast(1f)
+        val plotHeight = (bottom - top).coerceAtLeast(1f)
 
-            val data = model.xyData
-            val minValue = minOf(data.xMin, data.yMin)
-            val maxValue = maxOf(data.xMax, data.yMax)
-            val span = (maxValue - minValue).coerceAtLeast(0.01f)
-            val padding = span * 0.05f
-            val center = (minValue + maxValue) / 2f
-            val halfRange = span / 2f + padding
-            chart.xAxis.axisMinimum = center - halfRange
-            chart.xAxis.axisMaximum = center + halfRange
-            chart.axisLeft.axisMinimum = center - halfRange
-            chart.axisLeft.axisMaximum = center + halfRange
-            chart.tag = version
-            chart.notifyDataSetChanged()
-            chart.invalidate()
+        val pointsByTracker = model.trackerIds
+            .filter { model.isTrajectoryVisible(it) }
+            .associateWith { model.trajectoryPoints(it) }
+        val allPoints = pointsByTracker.values.flatten()
+
+        if (allPoints.isEmpty()) return@Canvas
+
+        // Use the same range on both axes so that the trajectory keeps its geometric proportions.
+        val minValue = minOf(
+            allPoints.minOf { minOf(it.x, it.y) },
+            0f.takeIf { allPoints.size == 1 } ?: Float.POSITIVE_INFINITY
+        )
+        val maxValue = maxOf(
+            allPoints.maxOf { maxOf(it.x, it.y) },
+            0f.takeIf { allPoints.size == 1 } ?: Float.NEGATIVE_INFINITY
+        )
+        val span = (maxValue - minValue).coerceAtLeast(0.01f)
+        val padding = span * 0.08f
+        val axisMin = minValue - padding
+        val axisMax = maxValue + padding
+        val axisSpan = (axisMax - axisMin).coerceAtLeast(0.01f)
+
+        // Grid and tick labels.
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = textColor.toArgb()
+            textSize = 27f
+            textAlign = Paint.Align.RIGHT
         }
-    )
+        val xLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = textColor.toArgb()
+            textSize = 27f
+            textAlign = Paint.Align.CENTER
+        }
+        for (tick in 0..4) {
+            val fraction = tick / 4f
+            val x = left + fraction * plotWidth
+            val y = bottom - fraction * plotHeight
+            drawLine(gridColor, Offset(x, top), Offset(x, bottom), strokeWidth = 1f)
+            drawLine(gridColor, Offset(left, y), Offset(right, y), strokeWidth = 1f)
+            val value = axisMin + fraction * axisSpan
+            drawContext.canvas.nativeCanvas.drawText(
+                String.format(Locale.getDefault(), "%.2f", value),
+                left - 8f, y + 9f, labelPaint
+            )
+            drawContext.canvas.nativeCanvas.drawText(
+                String.format(Locale.getDefault(), "%.2f", value),
+                x, bottom + 29f, xLabelPaint
+            )
+        }
+
+        // Plot the measured points in their original acquisition order. No connecting lines.
+        pointsByTracker.forEach { (trackerId, points) ->
+            val color = TrackerColors.color(trackerId)
+            points.forEach { point ->
+                val px = left + ((point.x - axisMin) / axisSpan) * plotWidth
+                val yFraction = ((point.y - axisMin) / axisSpan).coerceIn(0f, 1f)
+                val py = if (invertY) bottom - yFraction * plotHeight else top + yFraction * plotHeight
+                drawCircle(color = color, radius = 4.5f, center = Offset(px, py))
+            }
+        }
+
+        val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = textColor.toArgb()
+            textSize = 25f
+            textAlign = Paint.Align.CENTER
+        }
+        val suffix = unitLabel?.let { " ($it)" }.orEmpty()
+        drawContext.canvas.nativeCanvas.drawText("x$suffix", (left + right) / 2f, size.height - 5f, axisPaint)
+        drawContext.canvas.nativeCanvas.save()
+        drawContext.canvas.nativeCanvas.rotate(-90f, 18f, (top + bottom) / 2f)
+        drawContext.canvas.nativeCanvas.drawText("y$suffix", 18f, (top + bottom) / 2f, axisPaint)
+        drawContext.canvas.nativeCanvas.restore()
+    }
 }
 
 @Composable
