@@ -2,6 +2,7 @@ package de.tudarmstadt.physics.trackingplot.ui.common
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,10 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
@@ -34,16 +39,92 @@ fun TrackingChart(
     axisWindow: ClosedFloatingPointRange<Float>? = null,
     trackerCount: Int = model.trackerIds.size
 ) {
+    var showTrajectory by rememberSaveable { mutableStateOf(false) }
+    var invertY by rememberSaveable { mutableStateOf(true) }
     Column(modifier = modifier) {
-        LineChartView(
-            model = model,
-            axisWindow = axisWindow,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        )
+        if (showTrajectory) {
+            TrajectoryChartView(
+                model = model,
+                invertY = invertY,
+                modifier = Modifier.fillMaxWidth().weight(1f).aspectRatio(1f)
+            )
+        } else {
+            LineChartView(
+                model = model,
+                axisWindow = axisWindow,
+                modifier = Modifier.fillMaxWidth().weight(1f)
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(selected = !showTrajectory, onClick = { showTrajectory = false }, label = { Text("t-x / t-y") })
+            FilterChip(selected = showTrajectory, onClick = { showTrajectory = true }, label = { Text("x-y-Bahn") })
+            if (showTrajectory) {
+                FilterChip(selected = invertY, onClick = { invertY = !invertY }, label = { Text(if (invertY) "y nach oben" else "y nach unten") })
+            }
+        }
         SeriesChips(model = model, trackerCount = trackerCount)
     }
+}
+
+@Composable
+private fun TrajectoryChartView(
+    model: ChartModel,
+    invertY: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val textColor = colorScheme.onSurface.toArgb()
+    val gridColor = colorScheme.outlineVariant.toArgb()
+    val unitLabel = model.unitLabel
+
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            LineChart(context).apply {
+                description.isEnabled = false
+                axisRight.isEnabled = false
+                setNoDataText("")
+                setTouchEnabled(true)
+                isDragEnabled = true
+                setScaleEnabled(true)
+                setPinchZoom(false)
+                xAxis.position = XAxis.XAxisPosition.BOTTOM
+                xAxis.valueFormatter = ValueAxisFormatter(unitLabel)
+                axisLeft.valueFormatter = ValueAxisFormatter(unitLabel)
+                legend.isWordWrapEnabled = true
+            }
+        },
+        update = { chart ->
+            val version = model.version
+            if (chart.data !== model.xyData) chart.data = model.xyData
+            chart.xAxis.textColor = textColor
+            chart.xAxis.gridColor = gridColor
+            chart.xAxis.axisLineColor = gridColor
+            chart.axisLeft.textColor = textColor
+            chart.axisLeft.gridColor = gridColor
+            chart.axisLeft.axisLineColor = gridColor
+            chart.legend.textColor = textColor
+            chart.axisLeft.isInverted = invertY
+
+            val data = model.xyData
+            val minValue = minOf(data.xMin, data.yMin)
+            val maxValue = maxOf(data.xMax, data.yMax)
+            val span = (maxValue - minValue).coerceAtLeast(0.01f)
+            val padding = span * 0.05f
+            val center = (minValue + maxValue) / 2f
+            val halfRange = span / 2f + padding
+            chart.xAxis.axisMinimum = center - halfRange
+            chart.xAxis.axisMaximum = center + halfRange
+            chart.axisLeft.axisMinimum = center - halfRange
+            chart.axisLeft.axisMaximum = center + halfRange
+            chart.tag = version
+            chart.notifyDataSetChanged()
+            chart.invalidate()
+        }
+    )
 }
 
 @Composable
