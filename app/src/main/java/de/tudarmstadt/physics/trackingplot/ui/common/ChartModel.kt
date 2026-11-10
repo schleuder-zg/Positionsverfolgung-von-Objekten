@@ -83,12 +83,14 @@ class ChartModel(private val rulerScale: RulerScale?) {
     fun toggleSeries(label: String) {
         val visible = label in _hiddenSeries
         if (visible) _hiddenSeries.remove(label) else _hiddenSeries.add(label)
-        val trackerId = trackerIdFromLabel(label)
-        if (trackerId >= 0) {
-            if (visible) hiddenTrackers.remove(trackerId) else hiddenTrackers.add(trackerId)
+        val trackerId = seriesByTracker.keys.firstOrNull {
+            label == xLabel(it) || label == yLabel(it)
         }
         (data.getDataSetByLabel(label, false) as? LineDataSet)?.isVisible = visible
-        xySeriesByTracker[trackerIdFromLabel(label)]?.isVisible = visible
+        if (trackerId != null) {
+            val showTrajectory = xLabel(trackerId) !in _hiddenSeries || yLabel(trackerId) !in _hiddenSeries
+            xySeriesByTracker[trackerId]?.isVisible = showTrajectory
+        }
         commit()
     }
 
@@ -113,15 +115,10 @@ class ChartModel(private val rulerScale: RulerScale?) {
             setDrawValues(false)
             mode = LineDataSet.Mode.LINEAR
             form = Legend.LegendForm.LINE
-            isVisible = trackerId !in hiddenTrackers
+            isVisible = true
             xyData.addDataSet(this)
         }
     }
-
-    private val hiddenTrackers = mutableSetOf<Int>()
-
-    private fun trackerIdFromLabel(label: String): Int =
-        xySeriesByTracker.entries.firstOrNull { it.value.label == label }?.key ?: -1
 
     private fun newSeries(label: String, color: Int, dashed: Boolean): LineDataSet =
         LineDataSet(ArrayList(), label).apply {
