@@ -77,7 +77,8 @@ fun TrackingChart(
 
 /**
  * XY plot rendered directly on a Compose Canvas. This deliberately draws individual samples
- * only: it does not sort x coordinates and does not use MPAndroidChart's LineChartRenderer.
+ * and connects consecutive samples with straight segments. It does not sort x coordinates or use
+ * MPAndroidChart's LineChartRenderer.
  */
 @Composable
 private fun TrajectoryChartView(
@@ -149,9 +150,36 @@ private fun TrajectoryChartView(
             )
         }
 
-        // Plot the measured points in their original acquisition order. No connecting lines.
+        // Connect each sample to the next one in acquisition order with a straight segment.
+        // Do not sort by x: the tracked object may move backwards or change direction.
         pointsByTracker.forEach { (trackerId, points) ->
             val color = TrackerColors.color(trackerId)
+            for (index in 0 until points.lastIndex) {
+                val first = points[index]
+                val second = points[index + 1]
+                val startX = left + ((first.x - axisMin) / axisSpan) * plotWidth
+                val startYFraction = ((first.y - axisMin) / axisSpan).coerceIn(0f, 1f)
+                val startY = if (invertY) {
+                    bottom - startYFraction * plotHeight
+                } else {
+                    top + startYFraction * plotHeight
+                }
+                val endX = left + ((second.x - axisMin) / axisSpan) * plotWidth
+                val endYFraction = ((second.y - axisMin) / axisSpan).coerceIn(0f, 1f)
+                val endY = if (invertY) {
+                    bottom - endYFraction * plotHeight
+                } else {
+                    top + endYFraction * plotHeight
+                }
+                drawLine(
+                    color = color,
+                    start = Offset(startX, startY),
+                    end = Offset(endX, endY),
+                    strokeWidth = 2f
+                )
+            }
+
+            // Draw the sample markers over the line segments.
             points.forEach { point ->
                 val px = left + ((point.x - axisMin) / axisSpan) * plotWidth
                 val yFraction = ((point.y - axisMin) / axisSpan).coerceIn(0f, 1f)
